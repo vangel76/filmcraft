@@ -367,6 +367,22 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (
     (open, false)
 }
 
+/// The Color Match Reference field's text for `t`, in the sequence's Display Format.
+fn reference_text(t: Tick, s: &filmcraft_project::SequenceSettings) -> String {
+    filmcraft_time::format_time(t, s.frame_rate, s.drop_frame, s.display, 48000)
+}
+
+/// `lumetri.applyMatch` params for a typed Reference. Timecode goes through as `referenceTimecode`
+/// (the command parses it); a Feet + Frames or Frames entry is parsed here and sent as a frame.
+fn reference_params(text: &str, face: bool, s: Option<&filmcraft_project::SequenceSettings>) -> Value {
+    if let Some(s) = s.filter(|s| s.display != filmcraft_time::TimeDisplay::Timecode)
+        && let Ok(frame) = filmcraft_time::parse_time_display(text, s.frame_rate, s.drop_frame, s.display, 0)
+    {
+        return json!({"referenceFrame": frame, "faceDetection": face});
+    }
+    json!({"referenceTimecode": text, "faceDetection": face})
+}
+
 fn sub(ui: &mut egui::Ui, t: &Tokens, name: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(name).color(t.text).strong().size(12.0));
@@ -636,7 +652,10 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     sub(ui, &t, tl!("Color Match"));
     let key = egui::Id::unique("lumetri-match-ref");
     let fd_key = egui::Id::unique("lumetri-match-face");
-    let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
+    let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| match app.session.active_sequence() {
+        Some(q) => reference_text(filmcraft_time::Tick::ZERO, &q.settings),
+        None => "00:00:00:00".to_string(),
+    });
     let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
     // Comparison View: the Program monitor shows the reference frame next to the current one, and
     // Apply Match uses that reference
@@ -648,7 +667,7 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     }
     let reference = app.ui.program.compare_ref.filter(|_| comparing).map(filmcraft_time::Tick);
     if let (Some(r), Some(q)) = (reference, app.session.active_sequence()) {
-        tc = filmcraft_time::format_time(r, q.settings.frame_rate, q.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
+        tc = reference_text(r, &q.settings);
     }
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Reference")).color(t.text_dim)));
@@ -662,7 +681,7 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     if b.clicked() {
         let p = match reference {
             Some(r) => json!({"referenceTime": r.0, "faceDetection": face}),
-            None => json!({"referenceTimecode": tc, "faceDetection": face}),
+            None => reference_params(&tc, face, app.session.active_sequence().map(|q| &q.settings)),
         };
         out.push(("lumetri.applyMatch", p));
     }
@@ -670,4 +689,28 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
         d.insert_temp(key, tc);
         d.insert_temp(fd_key, face);
     });
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use filmcraft_time::TimeDisplay;
+
+    #[test]
+    fn reference_field_follows_the_display_format() {
+        let mut s = filmcraft_project::SequenceSettings::default();
+        let t = s.frame_rate.tick_of(40);
+        assert_eq!(reference_text(t, &s), filmcraft_time::format_time(t, s.frame_rate, s.drop_frame, TimeDisplay::Timecode, 48000));
+        // Timecode (and no sequence) keeps sending the typed text as `referenceTimecode`
+        assert_eq!(reference_params("00:00:01:00", true, Some(&s)), json!({"referenceTimecode": "00:00:01:00", "faceDetection": true}));
+        assert_eq!(reference_params("00:00:01:00", false, None), json!({"referenceTimecode": "00:00:01:00", "faceDetection": false}));
+        s.display = TimeDisplay::Feet35;
+        assert_eq!(reference_text(t, &s), "2+08");
+        assert_eq!(reference_params("2+08", true, Some(&s)), json!({"referenceFrame": 40, "faceDetection": true}));
+        // unparsable text still reaches the command, which reports it
+        assert_eq!(reference_params("nope", true, Some(&s)), json!({"referenceTimecode": "nope", "faceDetection": true}));
+        s.display = TimeDisplay::Frames;
+        assert_eq!(reference_text(t, &s), "40");
+        assert_eq!(reference_params("40", true, Some(&s)), json!({"referenceFrame": 40, "faceDetection": true}));
+    }
 }

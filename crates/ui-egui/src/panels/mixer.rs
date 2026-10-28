@@ -28,7 +28,7 @@ use filmcraft_project::mixer::{
     FADER_MAX_DB, FADER_MIN_DB, LANE_MUTE, LANE_PAN, LANE_PAN51_CENTER, LANE_PAN51_LFE, LANE_PAN51_X, LANE_PAN51_Y, LANE_VOLUME, MASTER_STRIP,
 };
 use filmcraft_project::{AutomationMode, InputMap, Sequence, Track, TrackId};
-use filmcraft_time::{TimeDisplay, format_time};
+use filmcraft_time::format_time;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -928,13 +928,18 @@ fn pan51_panner(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, tr: &Tr
     }
 }
 
+/// The transport's playhead and sequence duration readouts, in the sequence's Display Format.
+fn transport_times(s: &filmcraft_project::SequenceSettings, now: filmcraft_time::Tick, duration: filmcraft_time::Tick) -> (String, String) {
+    let fmt = |t| format_time(t, s.frame_rate, s.drop_frame, s.display, s.sample_rate as i64);
+    (fmt(now), fmt(duration))
+}
+
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, cx: &mut Ctx) {
     let t = cx.t;
     let seq = cx.seq;
     ui.painter().line_segment([pos2(row.min.x, row.min.y + 0.5), pos2(row.max.x, row.min.y + 0.5)], Stroke::new(1.0, t.separator));
-    let tc = format_time(cx.now, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
+    let (tc, dur) = transport_times(&seq.settings, cx.now, seq.duration());
     ui.painter().text(pos2(row.min.x + 12.0, row.center().y), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
-    let dur = format_time(seq.duration(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
     ui.painter().text(pos2(row.max.x - 12.0, row.center().y), Align2::RIGHT_CENTER, dur, Tokens::mono(12.0), t.text_dim);
     let playing = app.playback.playing;
     let buttons: [(Icon, &str, &str); 6] = [
@@ -1164,6 +1169,24 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_readouts_follow_the_display_format() {
+        use filmcraft_time::{Tick, TimeDisplay};
+        let mut s = filmcraft_project::SequenceSettings::default();
+        let (now, dur) = (s.frame_rate.tick_of(40), s.frame_rate.tick_of(100));
+        assert_eq!(
+            transport_times(&s, now, dur),
+            (
+                format_time(now, s.frame_rate, s.drop_frame, TimeDisplay::Timecode, 48000),
+                format_time(dur, s.frame_rate, s.drop_frame, TimeDisplay::Timecode, 48000)
+            )
+        );
+        s.display = TimeDisplay::Feet35;
+        assert_eq!(transport_times(&s, now, dur), ("2+08".to_string(), "6+04".to_string()));
+        s.display = TimeDisplay::Frames;
+        assert_eq!(transport_times(&s, Tick::ZERO, dur), ("0".to_string(), "100".to_string()));
+    }
 
     #[test]
     fn meter_well_and_inactive_clip_light_follow_theme() {

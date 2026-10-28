@@ -1,10 +1,16 @@
 //! Smaller panels: History, Markers, Info (the Media Browser is `panels::media_browser`).
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
-use filmcraft_time::{TimeDisplay, format_time};
+use filmcraft_time::format_time;
 
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
+
+/// A marker row's time: the start, plus `(duration)` for a ranged marker, in the sequence's Display Format.
+fn marker_time_text(start: filmcraft_time::Tick, duration: filmcraft_time::Tick, s: &filmcraft_project::SequenceSettings) -> String {
+    let fmt = |t| format_time(t, s.frame_rate, s.drop_frame, s.display, 48000);
+    if duration > filmcraft_time::Tick::ZERO { format!("{}  ({})", fmt(start), fmt(duration)) } else { fmt(start) }
+}
 
 pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
@@ -193,11 +199,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().rect_filled(Rect::from_min_size(r.min + vec2(4.0, 6.0), vec2(4.0, 26.0)), 2.0, Color32::from_rgb(c[0], c[1], c[2]));
             let name = if m.name.is_empty() { tl!("Marker") } else { &m.name };
             ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 12.0), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
-            let mut tc = format_time(m.start, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
-            if m.duration > filmcraft_time::Tick::ZERO {
-                let d = format_time(m.duration, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
-                tc = format!("{tc}  ({d})");
-            }
+            let mut tc = marker_time_text(m.start, m.duration, &seq.settings);
             if m.kind == filmcraft_project::MarkerKind::Chapter {
                 tc = tlf!("{tc}  Chapter", tc);
             }
@@ -237,6 +239,7 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.label(v);
         });
     };
+    let seq_display = app.session.active_sequence().map(|q| q.settings.display).unwrap_or_default();
     if let Some(item) = super::metadata::target(app).and_then(|id| app.session.project.item(id)).cloned() {
         let header = ui.label(egui::RichText::new(&item.name).strong());
         app.auto.add_response("info.item", &header, &item.name);
@@ -250,7 +253,7 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 line(ui, tl!("Audio:"), format!("{} Hz - {} ch - {}", a.sample_rate, a.channels, a.codec));
             }
         }
-        line(ui, tl!("Duration:"), format_time(item.duration(), item.frame_rate(), false, TimeDisplay::Timecode, 48000));
+        line(ui, tl!("Duration:"), format_time(item.duration(), item.frame_rate(), false, seq_display, 48000));
         ui.separator();
     }
     if let Some(seq) = app.session.active_sequence() {
@@ -262,7 +265,7 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             tl!("Settings:"),
             format!("{}x{} · {} fps · {} Hz", seq.settings.width, seq.settings.height, seq.settings.frame_rate.label(), seq.settings.sample_rate),
         );
-        line(ui, tl!("Playhead:"), format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000));
+        line(ui, tl!("Playhead:"), format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, seq.settings.display, 48000));
         for (i, tr) in seq.video_tracks.iter().enumerate().rev() {
             let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
             line(ui, &tlf!("Video {n}:", n = i + 1), at);
@@ -274,4 +277,23 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     ui.separator();
     line(ui, tl!("UI:"), tlf!("{fps} fps · {n} frames queued", fps = format!("{:.0}", app.fps), n = app.frames.queue_len()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_time::{Tick, TimeDisplay};
+
+    #[test]
+    fn marker_times_follow_the_display_format() {
+        let mut s = filmcraft_project::SequenceSettings::default();
+        let (a, d) = (s.frame_rate.tick_of(40), s.frame_rate.tick_of(20));
+        let tc = |t| format_time(t, s.frame_rate, s.drop_frame, TimeDisplay::Timecode, 48000);
+        assert_eq!(marker_time_text(a, Tick::ZERO, &s), tc(a));
+        assert_eq!(marker_time_text(a, d, &s), format!("{}  ({})", tc(a), tc(d)));
+        s.display = TimeDisplay::Feet35;
+        assert_eq!(marker_time_text(a, d, &s), "2+08  (1+04)");
+        s.display = TimeDisplay::Frames;
+        assert_eq!(marker_time_text(a, Tick::ZERO, &s), "40");
+    }
 }

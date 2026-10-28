@@ -224,6 +224,22 @@ fn white_header_moves_both_dialogs_and_controls_still_work() {
 }
 
 #[test]
+fn exported_frame_time_follows_the_display_format() {
+    let mut h = harness();
+    let seq = h.state().session.state.active_sequence.unwrap();
+    Arc::make_mut(&mut h.state_mut().session.project).sequence_mut(seq).unwrap().settings.display = filmcraft_time::TimeDisplay::Feet35;
+    h.state_mut().session.set_playhead(FrameRate::FPS_24.tick_of(40));
+    h.state_mut().session.state.source_playhead = FrameRate::FPS_24.tick_of(67);
+    step(&mut h);
+    for (monitor, expected) in [("source", "4+03"), ("program", "2+08")] {
+        click(&mut h, &format!("{monitor}.transport.exportFrame"));
+        let displayed = h.state().auto.elements.iter().find(|e| e.id == "exportFrame.timecode").unwrap().label.clone();
+        assert_eq!(displayed, expected, "{monitor}");
+        click(&mut h, "exportFrame.close");
+    }
+}
+
+#[test]
 fn exported_frame_timecode_matches_each_monitor_and_stays_captured() {
     for (rate, drop_frame) in [
         (FrameRate::FPS_24, false),
